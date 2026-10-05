@@ -1,0 +1,47 @@
+# Node
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Large ML files
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Datasets
+data/
+datasets/
+
+# Build
+coverage/
+
+# Temporary
+tmp/
+temp/
