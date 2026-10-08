@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from vision.features import distance
+from vision.features import distance, normalized_distance
 from vision.landmarks import Landmark
 from vision.landmark_indices import (
     INDEX_TIP,
@@ -81,18 +81,17 @@ def get_finger_states(
 
 def is_pinch(
     landmarks: list[Landmark],
-    threshold: float = 0.08,
+    threshold: float = 0.45,
 ) -> bool:
-    """Detect thumb-index pinch."""
+    """Detect thumb-index pinch normalized to hand size."""
 
-    return (
-        distance(
-            landmarks[THUMB_TIP],
-            landmarks[INDEX_TIP],
-        )
-        < threshold
+    pinch = normalized_distance(
+        landmarks[THUMB_TIP],
+        landmarks[INDEX_TIP],
+        landmarks,
     )
 
+    return pinch < threshold
 
 def detect_gesture(
     landmarks: list[Landmark],

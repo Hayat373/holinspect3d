@@ -4,7 +4,9 @@ from vision.features import (
     pinch_distance,
     palm_center,
     fingertip_distances_from_wrist,
+    hand_scale,
 )
+
 from vision.landmarks import Landmark
 from vision.landmark_indices import (
     INDEX_TIP,
@@ -79,3 +81,16 @@ def test_fingertip_distances():
     assert result["middle"] == 0.5
     assert result["ring"] == 0.6
     assert result["pinky"] == 0.7
+
+def test_hand_scale():
+    landmarks = [
+        Landmark(0.0, 0.0, 0.0)
+        for _ in range(21)
+    ]
+
+    landmarks[0] = Landmark(0.0, 0.0, 0.0)
+    landmarks[9] = Landmark(0.0, 1.0, 0.0)
+
+    scale = hand_scale(landmarks)
+
+    assert scale == 1.0

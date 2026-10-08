@@ -63,3 +63,28 @@ def fingertip_distances_from_wrist(
         "ring": distance(wrist, landmarks[RING_TIP]),
         "pinky": distance(wrist, landmarks[PINKY_TIP]),
     }
+
+def hand_scale(landmarks: list[Landmark]) -> float:
+    """Estimate hand size using wrist-to-middle-MCP distance."""
+
+    wrist = landmarks[WRIST]
+
+    return distance(
+        wrist,
+        landmarks[9],
+    )
+
+
+def normalized_distance(
+    a: Landmark,
+    b: Landmark,
+    landmarks: list[Landmark],
+) -> float:
+    """Distance between two landmarks normalized by hand size."""
+
+    scale = hand_scale(landmarks)
+
+    if scale == 0:
+        return 0.0
+
+    return distance(a, b) / scale
