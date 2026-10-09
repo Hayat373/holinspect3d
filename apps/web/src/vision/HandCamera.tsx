@@ -30,11 +30,46 @@ type HandCameraProps = {
   ) => void
 }
 
+function stabilizeGesture(
+  gesture: string,
+  history: string[],
+  windowSize = 5,
+): string {
+  history.push(gesture)
+
+  if (history.length > windowSize) {
+    history.shift()
+  }
+
+  const counts = new Map<string, number>()
+
+  for (const item of history) {
+    counts.set(item, (counts.get(item) ?? 0) + 1)
+  }
+
+  let bestGesture = 'UNKNOWN'
+  let bestCount = 0
+
+  for (const [name, count] of counts) {
+    if (count > bestCount) {
+      bestGesture = name
+      bestCount = count
+    }
+  }
+
+  return bestCount >= 3 ? bestGesture : 'UNKNOWN'
+}
+
 export default function HandCamera({
   onHandUpdate,
 }: HandCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const smoothedPoint = useRef<HandPoint | null>(null)
+  const gestureHistory = useRef<string[]>([])
+  const lastStableGesture = useRef('UNKNOWN')
+  const lastUpdateTime = useRef(0)
 
   const [status, setStatus] = useState('Starting...')
   const [handCount, setHandCount] = useState(0)
@@ -66,16 +101,14 @@ export default function HandCamera({
         if (video.readyState < 1) {
           await new Promise<void>((resolve, reject) => {
             video.onloadedmetadata = () => resolve()
-            video.onerror = () => {
+            video.onerror = () =>
               reject(new Error('Could not load webcam video.'))
-            }
           })
         }
 
         if (cancelled) return
 
         await video.play()
-
         if (cancelled) return
 
         setStatus('Loading hand tracking model...')
@@ -89,9 +122,7 @@ export default function HandCamera({
         handLandmarker = await HandLandmarker.createFromOptions(
           vision,
           {
-            baseOptions: {
-              modelAssetPath: MODEL_PATH,
-            },
+            baseOptions: { modelAssetPath: MODEL_PATH },
             runningMode: 'VIDEO',
             numHands: 2,
             minHandDetectionConfidence: 0.5,
@@ -157,29 +188,58 @@ export default function HandCamera({
 
         setHandCount(hands.length)
 
-        const currentGesture = firstHand
+        const rawGesture = firstHand
           ? detectGesture(firstHand)
           : 'UNKNOWN'
 
-        setGesture(currentGesture)
+        const stableGesture = stabilizeGesture(
+          rawGesture,
+          gestureHistory.current,
+        )
 
-        // Send the mirrored index fingertip position to the 3D scene.
+        if (stableGesture !== lastStableGesture.current) {
+          lastStableGesture.current = stableGesture
+          setGesture(stableGesture)
+        }
+
         const indexTip = firstHand?.[8]
 
-        onHandUpdate(
-          indexTip
+        if (indexTip) {
+          const target = {
+            x: 1 - indexTip.x,
+            y: indexTip.y,
+          }
+
+          const previous = smoothedPoint.current
+          const alpha = 0.25
+
+          const next = previous
             ? {
-                x: 1 - indexTip.x,
-                y: indexTip.y,
+                x: previous.x + alpha * (target.x - previous.x),
+                y: previous.y + alpha * (target.y - previous.y),
               }
-            : null,
-          currentGesture,
-        )
+            : target
+
+          smoothedPoint.current = next
+
+          const now = performance.now()
+
+          if (now - lastUpdateTime.current >= 33) {
+            lastUpdateTime.current = now
+            onHandUpdate(next, stableGesture)
+          }
+        } else {
+          smoothedPoint.current = null
+          gestureHistory.current.length = 0
+          lastStableGesture.current = 'UNKNOWN'
+
+          setGesture('UNKNOWN')
+          onHandUpdate(null, 'UNKNOWN')
+        }
 
         context.clearRect(0, 0, canvas.width, canvas.height)
 
         for (const hand of hands) {
-          // Draw hand connections.
           context.beginPath()
 
           for (const [start, end] of CONNECTIONS) {
@@ -190,7 +250,6 @@ export default function HandCamera({
               a.x * canvas.width,
               a.y * canvas.height,
             )
-
             context.lineTo(
               b.x * canvas.width,
               b.y * canvas.height,
@@ -201,10 +260,8 @@ export default function HandCamera({
           context.lineWidth = 2
           context.stroke()
 
-          // Draw landmark points.
           for (const landmark of hand) {
             context.beginPath()
-
             context.arc(
               landmark.x * canvas.width,
               landmark.y * canvas.height,
@@ -212,26 +269,8 @@ export default function HandCamera({
               0,
               Math.PI * 2,
             )
-
             context.fillStyle = '#c084fc'
             context.fill()
-          }
-
-          // Highlight the index fingertip.
-          const tip = hand[8]
-
-          if (tip) {
-            context.beginPath()
-            context.arc(
-              tip.x * canvas.width,
-              tip.y * canvas.height,
-              8,
-              0,
-              Math.PI * 2,
-            )
-            context.strokeStyle = '#e9d5ff'
-            context.lineWidth = 3
-            context.stroke()
           }
         }
       } catch (error) {
@@ -246,7 +285,6 @@ export default function HandCamera({
     return () => {
       cancelled = true
       cancelAnimationFrame(animationFrame)
-
       handLandmarker?.close()
       stream?.getTracks().forEach((track) => track.stop())
 
@@ -254,6 +292,8 @@ export default function HandCamera({
         videoRef.current.srcObject = null
       }
 
+      smoothedPoint.current = null
+      gestureHistory.current.length = 0
       onHandUpdate(null, 'UNKNOWN')
     }
   }, [onHandUpdate])

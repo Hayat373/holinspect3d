@@ -8,6 +8,7 @@ export type HandLandmark = {
 export type GestureName =
   | 'POINT'
   | 'PINCH'
+  | 'ROTATE'
   | 'OPEN_PALM'
   | 'FIST'
   | 'UNKNOWN'
@@ -46,7 +47,8 @@ export function detectGesture(
 
   const wrist = landmarks[WRIST]
   const handScale = distance(wrist, landmarks[MIDDLE_MCP])
-
+  
+  
   if (handScale < 0.0001) return 'UNKNOWN'
 
   const pinchDistance =
@@ -73,6 +75,10 @@ export function detectGesture(
   if (index && middle && ring && pinky) return 'OPEN_PALM'
 
   if (!index && !middle && !ring && !pinky) return 'FIST'
+
+  if (index && middle && !ring && !pinky) {
+  return 'ROTATE'
+  }
 
   return 'UNKNOWN'
 }
