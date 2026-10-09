@@ -1,10 +1,22 @@
+
 import { useEffect, useRef, useState } from 'react'
 import {
   FilesetResolver,
   HandLandmarker,
 } from '@mediapipe/tasks-vision'
+import { detectGesture } from './gestureEngine'
 
 const MODEL_PATH = '/models/hand_landmarker.task'
+const WASM_PATH = '/mediapipe/wasm'
+
+const CONNECTIONS: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
+]
 
 export default function HandCamera() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -12,82 +24,87 @@ export default function HandCamera() {
 
   const [status, setStatus] = useState('Starting...')
   const [handCount, setHandCount] = useState(0)
+  const [gesture, setGesture] = useState('UNKNOWN')
 
   useEffect(() => {
     let stream: MediaStream | null = null
     let animationFrame = 0
     let handLandmarker: HandLandmarker | null = null
+    let cancelled = false
 
     async function start() {
       try {
         setStatus('Opening camera...')
 
         stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: 640,
-            height: 480,
-          },
+          video: { width: 640, height: 480 },
           audio: false,
         })
 
-        if (!videoRef.current) {
-          throw new Error('Video element not available.')
+        if (cancelled || !videoRef.current) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
         }
 
-        videoRef.current.srcObject = stream
-
-        await new Promise<void>((resolve) => {
         const video = videoRef.current
+        video.srcObject = stream
 
-        if (!video) {
-          resolve()
-          return
+        if (video.readyState < 1) {
+          await new Promise<void>((resolve, reject) => {
+            video.onloadedmetadata = () => resolve()
+            video.onerror = () => reject(
+              new Error('Could not load webcam video.')
+            )
+          })
         }
 
-        if (video.readyState >= 1) {
-          resolve()
-          return
-        }
+        if (cancelled) return
 
-        video.onloadedmetadata = () => {
-          resolve()
-        }
-      })
+        await video.play()
 
-      await videoRef.current.play()
+        if (cancelled) return
 
-        setStatus('Loading MediaPipe...')
+        setStatus('Loading hand tracking model...')
 
         const vision = await FilesetResolver.forVisionTasks(
-          '/mediapipe/wasm',
+          WASM_PATH,
         )
 
-        handLandmarker =
-          await HandLandmarker.createFromOptions(
-            vision,
-            {
-              baseOptions: {
-                modelAssetPath: MODEL_PATH,
-              },
-              runningMode: 'VIDEO',
-              numHands: 2,
-              minHandDetectionConfidence: 0.5,
-              minHandPresenceConfidence: 0.5,
-              minTrackingConfidence: 0.5,
+        if (cancelled) return
+
+        handLandmarker = await HandLandmarker.createFromOptions(
+          vision,
+          {
+            baseOptions: {
+              modelAssetPath: MODEL_PATH,
             },
-          )
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+          },
+        )
+
+        if (cancelled) {
+          handLandmarker.close()
+          handLandmarker = null
+          return
+        }
 
         setStatus('Hand tracking active')
-
         detectHands()
       } catch (error) {
-        console.error('HAND TRACKING ERROR:', error)
-        setStatus('ERROR - check browser console')
+        if (!cancelled) {
+          console.error('HAND TRACKING ERROR:', error)
+          setStatus('ERROR - check browser console')
+        }
       }
     }
 
     function detectHands() {
       if (
+        cancelled ||
         !videoRef.current ||
         !canvasRef.current ||
         !handLandmarker
@@ -99,135 +116,93 @@ export default function HandCamera() {
       const canvas = canvasRef.current
       const context = canvas.getContext('2d')
 
-      if (!context) {
+      if (!context) return
+
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        animationFrame = requestAnimationFrame(detectHands)
         return
       }
 
       if (
-        video.videoWidth === 0 ||
-        video.videoHeight === 0
+        canvas.width !== video.videoWidth ||
+        canvas.height !== video.videoHeight
       ) {
-        animationFrame = requestAnimationFrame(
-          detectHands,
-        )
-        return
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
       }
 
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-
-      const timestamp = performance.now()
-
-      const results =
-        handLandmarker.detectForVideo(
+      try {
+        const results = handLandmarker.detectForVideo(
           video,
-          timestamp,
+          performance.now(),
         )
 
-      const detectedHands =
-        results.landmarks?.length ?? 0
+        const hands = results.landmarks ?? []
+        setHandCount(hands.length)
 
-      setHandCount(detectedHands)
+        setGesture(
+          hands.length > 0
+            ? detectGesture(hands[0])
+            : 'UNKNOWN',
+        )
 
-      context.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height,
-      )
+        context.clearRect(0, 0, canvas.width, canvas.height)
 
-      if (results.landmarks) {
-        for (const hand of results.landmarks) {
-          // Draw landmarks
+        for (const hand of hands) {
+          // Draw connections first so landmark dots remain visible.
+          context.beginPath()
+
+          for (const [start, end] of CONNECTIONS) {
+            const a = hand[start]
+            const b = hand[end]
+
+            context.moveTo(
+              a.x * canvas.width,
+              a.y * canvas.height,
+            )
+            context.lineTo(
+              b.x * canvas.width,
+              b.y * canvas.height,
+            )
+          }
+
+          context.strokeStyle = '#ffffff'
+          context.lineWidth = 2
+          context.stroke()
+
           for (const landmark of hand) {
-            const x =
-              landmark.x * canvas.width
-
-            const y =
-              landmark.y * canvas.height
-
             context.beginPath()
             context.arc(
-              x,
-              y,
-              5,
+              landmark.x * canvas.width,
+              landmark.y * canvas.height,
+              4,
               0,
               Math.PI * 2,
             )
-
             context.fillStyle = '#c084fc'
             context.fill()
           }
-
-          // Draw connections
-          const connections = [
-            [0, 1],
-            [1, 2],
-            [2, 3],
-            [3, 4],
-
-            [0, 5],
-            [5, 6],
-            [6, 7],
-            [7, 8],
-
-            [0, 9],
-            [9, 10],
-            [10, 11],
-            [11, 12],
-
-            [0, 13],
-            [13, 14],
-            [14, 15],
-            [15, 16],
-
-            [0, 17],
-            [17, 18],
-            [18, 19],
-            [19, 20],
-
-            [5, 9],
-            [9, 13],
-            [13, 17],
-          ]
-
-          for (const [start, end] of connections) {
-            const startPoint = hand[start]
-            const endPoint = hand[end]
-
-            context.beginPath()
-
-            context.moveTo(
-              startPoint.x * canvas.width,
-              startPoint.y * canvas.height,
-            )
-
-            context.lineTo(
-              endPoint.x * canvas.width,
-              endPoint.y * canvas.height,
-            )
-
-            context.strokeStyle = '#ffffff'
-            context.lineWidth = 3
-            context.stroke()
-          }
         }
+      } catch (error) {
+        console.error('HAND DETECTION ERROR:', error)
       }
 
-      animationFrame =
-        requestAnimationFrame(detectHands)
+      animationFrame = requestAnimationFrame(detectHands)
     }
 
-    start()
+    void start()
 
     return () => {
+      cancelled = true
       cancelAnimationFrame(animationFrame)
 
       handLandmarker?.close()
 
-      stream?.getTracks().forEach((track) => {
-        track.stop()
-      })
+      stream?.getTracks().forEach((track) => track.stop())
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = null
+      }
     }
   }, [])
 
@@ -237,6 +212,8 @@ export default function HandCamera() {
         position: 'relative',
         width: '100%',
         height: '100%',
+        overflow: 'hidden',
+        background: '#080512',
       }}
     >
       <video
@@ -267,18 +244,21 @@ export default function HandCamera() {
       <div
         style={{
           position: 'absolute',
-          top: '8px',
-          left: '8px',
-          padding: '6px 10px',
-          borderRadius: '8px',
-          background: 'rgba(0, 0, 0, 0.7)',
-          color: 'white',
-          fontSize: '12px',
+          top: 8,
+          left: 8,
+          padding: '8px 10px',
+          borderRadius: 8,
+          background: 'rgba(8, 5, 18, 0.82)',
+          border: '1px solid rgba(192, 132, 252, 0.35)',
+          color: '#f5f3ff',
+          fontSize: 12,
+          lineHeight: 1.7,
+          backdropFilter: 'blur(8px)',
         }}
       >
-        {status}
-        <br />
-        Hands detected: {handCount}
+        <div>{status}</div>
+        <div>Hands detected: {handCount}</div>
+        <div>Gesture: {gesture}</div>
       </div>
     </div>
   )
