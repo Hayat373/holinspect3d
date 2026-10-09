@@ -1,6 +1,18 @@
-import { Canvas } from '@react-three/fiber'
+
+import { useEffect, useState } from 'react'
+import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { useState } from 'react'
+import * as THREE from 'three'
+
+type HandPoint = {
+  x: number
+  y: number
+}
+
+type HoloSceneProps = {
+  handPoint: HandPoint | null
+  gesture: string
+}
 
 type PartProps = {
   name: string
@@ -8,10 +20,11 @@ type PartProps = {
   scale: [number, number, number]
   color: string
   selected: boolean
-  onSelect: () => void
+  onSelect: (name: string) => void
 }
 
 function Part({
+  name,
   position,
   scale,
   color,
@@ -20,15 +33,16 @@ function Part({
 }: PartProps) {
   return (
     <mesh
+      name={name}
+      userData={{ partName: name }}
       position={position}
       scale={scale}
       onClick={(event) => {
         event.stopPropagation()
-        onSelect()
+        onSelect(name)
       }}
     >
       <boxGeometry args={[1, 1, 1]} />
-
       <meshBasicMaterial
         color={selected ? '#ffffff' : color}
         wireframe={false}
@@ -37,68 +51,108 @@ function Part({
   )
 }
 
-function InspectableObject() {
-  const [selectedPart, setSelectedPart] = useState<string | null>(null)
-
+function InspectableObject({
+  selectedPart,
+  onSelect,
+}: {
+  selectedPart: string | null
+  onSelect: (name: string) => void
+}) {
   return (
     <group>
-      {/* Main body */}
       <Part
         name="Main Body"
         position={[0, 0, 0]}
         scale={[2.5, 1.4, 1.5]}
         color="#8b5cf6"
         selected={selectedPart === 'Main Body'}
-        onSelect={() => setSelectedPart('Main Body')}
+        onSelect={onSelect}
       />
-
-      {/* Top module */}
       <Part
         name="Top Module"
         position={[0, 1.1, 0]}
         scale={[1.2, 0.6, 1.0]}
-        color="#a855f7"
+        color="#c084fc"
         selected={selectedPart === 'Top Module'}
-        onSelect={() => setSelectedPart('Top Module')}
+        onSelect={onSelect}
       />
-
-      {/* Left module */}
       <Part
         name="Left Module"
         position={[-1.6, 0, 0]}
         scale={[0.5, 1.0, 1.1]}
         color="#7c3aed"
         selected={selectedPart === 'Left Module'}
-        onSelect={() => setSelectedPart('Left Module')}
+        onSelect={onSelect}
       />
-
-      {/* Right module */}
       <Part
         name="Right Module"
         position={[1.6, 0, 0]}
         scale={[0.5, 1.0, 1.1]}
         color="#7c3aed"
         selected={selectedPart === 'Right Module'}
-        onSelect={() => setSelectedPart('Right Module')}
+        onSelect={onSelect}
       />
-
-      {/* Core */}
       <Part
         name="Core"
         position={[0, 0, 0.85]}
         scale={[0.8, 0.8, 0.3]}
-        color="#c084fc"
+        color="#e9d5ff"
         selected={selectedPart === 'Core'}
-        onSelect={() => setSelectedPart('Core')}
+        onSelect={onSelect}
       />
     </group>
   )
 }
 
-export default function HoloScene() {
+function HandSelector({
+  handPoint,
+  gesture,
+  onSelect,
+}: {
+  handPoint: HandPoint | null
+  gesture: string
+  onSelect: (name: string) => void
+}) {
+  const { camera, scene } = useThree()
+
+  useEffect(() => {
+    if (!handPoint || gesture !== 'POINT') return
+
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2(
+      handPoint.x * 2 - 1,
+      1 - handPoint.y * 2,
+    )
+
+    raycaster.setFromCamera(pointer, camera)
+
+    const hits = raycaster.intersectObjects(
+      scene.children,
+      true,
+    )
+
+    const selectedHit = hits.find(
+      (hit) => typeof hit.object.userData.partName === 'string',
+    )
+
+    if (selectedHit) {
+      onSelect(selectedHit.object.userData.partName as string)
+    }
+  }, [handPoint, gesture, camera, scene, onSelect])
+
+  return null
+}
+
+export default function HoloScene({
+  handPoint,
+  gesture,
+}: HoloSceneProps) {
+  const [selectedPart, setSelectedPart] = useState<string | null>(null)
+
   return (
     <div
       style={{
+        position: 'relative',
         width: '100%',
         height: '100vh',
         background: '#080512',
@@ -110,10 +164,75 @@ export default function HoloScene() {
           fov: 45,
         }}
       >
-        <InspectableObject />
+        <InspectableObject
+          selectedPart={selectedPart}
+          onSelect={setSelectedPart}
+        />
 
-        <OrbitControls />
+        <HandSelector
+          handPoint={handPoint}
+          gesture={gesture}
+          onSelect={setSelectedPart}
+        />
+
+        <OrbitControls makeDefault />
       </Canvas>
+
+      <div
+        style={{
+          position: 'absolute',
+          top: 24,
+          left: 24,
+          color: '#f5f3ff',
+          fontFamily: 'sans-serif',
+          pointerEvents: 'none',
+        }}
+      >
+        <div
+          style={{
+            fontSize: 11,
+            letterSpacing: 3,
+            color: '#c084fc',
+            marginBottom: 8,
+          }}
+        >
+          HOLOINSPECT / 3D
+        </div>
+
+        <div style={{ fontSize: 22, fontWeight: 600 }}>
+          Object Inspection
+        </div>
+
+        <div
+          style={{
+            marginTop: 10,
+            fontSize: 13,
+            color: '#b8aecb',
+          }}
+        >
+          Gesture: {gesture.replace('_', ' ')}
+        </div>
+
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 13,
+            color: '#e9d5ff',
+          }}
+        >
+          Selected: {selectedPart ?? 'None'}
+        </div>
+
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 11,
+            color: '#827694',
+          }}
+        >
+          POINT · Select component
+        </div>
+      </div>
     </div>
   )
 }
