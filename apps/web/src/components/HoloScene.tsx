@@ -1,5 +1,6 @@
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { Suspense } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import {
   ContactShadows,
@@ -30,7 +31,10 @@ type MeshEntry = {
   explodedPosition: THREE.Vector3
 }
 
-const MODEL_PATH = '/models/mechanical-chassis.glb'
+const MODEL_OPTIONS = [
+  { name: 'Mechanical chassis', path: '/models/mechanical-chassis.glb' },
+  { name: 'Inspection drone', path: '/models/inspection-drone.glb' },
+]
 
 const gestureInfo: Record<
   GestureName,
@@ -132,12 +136,14 @@ function StatusDot({ active = true }: { active?: boolean }) {
 }
 
 function ImportedModel({
+  modelPath,
   handPoint,
   gesture,
   exploded,
   onSelect,
   onInfo,
 }: {
+  modelPath: string
   handPoint: HandPoint
   gesture: GestureName
   exploded: boolean
@@ -148,10 +154,11 @@ function ImportedModel({
     material: string
     vertices: number
     dimensions: string
+    parts: number
   }) => void
 }) {
-  const { scene } = useGLTF(MODEL_PATH)
-  const { camera } = useThree()
+  const { scene } = useGLTF(modelPath)
+  const { camera, controls } = useThree()
 
   const model = useMemo(() => {
     const clone = scene.clone(true)
@@ -177,17 +184,21 @@ function ImportedModel({
   const previousPoint = useRef<HandPoint>(null)
   const meshEntries = useRef<MeshEntry[]>([])
   const selectedMesh = useRef<THREE.Mesh | null>(null)
-  const zoomDistance = useRef(0)
   const cameraTarget = useMemo(() => new THREE.Vector3(0, 0, 0), [])
 
   useEffect(() => {
-    zoomDistance.current = camera.position.distanceTo(cameraTarget)
-
     const meshes: THREE.Mesh[] = []
     model.traverse((object) => {
       if (object instanceof THREE.Mesh) meshes.push(object)
     })
 
+    model.updateMatrixWorld(true)
+    const sourceBounds = new THREE.Box3().setFromObject(model)
+    const sourceSize = sourceBounds.getSize(new THREE.Vector3())
+    const sourceCenter = sourceBounds.getCenter(new THREE.Vector3())
+    const fitScale = 5.2 / Math.max(sourceSize.x, sourceSize.y, sourceSize.z, 0.001)
+    model.scale.setScalar(fitScale)
+    model.position.copy(sourceCenter).multiplyScalar(-fitScale)
     model.updateMatrixWorld(true)
     const bounds = new THREE.Box3().setFromObject(model)
     const center = bounds.getCenter(new THREE.Vector3())
@@ -225,7 +236,8 @@ function ImportedModel({
           total + (mesh.geometry.getAttribute('position')?.count ?? 0),
         0,
       ),
-      dimensions: `${bounds.getSize(new THREE.Vector3()).x.toFixed(2)} × ${bounds.getSize(new THREE.Vector3()).y.toFixed(2)} × ${bounds.getSize(new THREE.Vector3()).z.toFixed(2)}`,
+      dimensions: `${sourceSize.x.toFixed(2)} × ${sourceSize.y.toFixed(2)} × ${sourceSize.z.toFixed(2)}`,
+      parts: meshes.length,
     })
   }, [camera, cameraTarget, model, onInfo])
 
@@ -249,17 +261,17 @@ function ImportedModel({
 
     if (previous && gesture === 'PINCH') {
       const deltaY = handPoint.y - previous.y
-      zoomDistance.current = THREE.MathUtils.clamp(
-        zoomDistance.current + deltaY * 8,
-        2.5,
-        12,
-      )
-
-      const offset = camera.position.clone().sub(cameraTarget).normalize()
-      camera.position.copy(
-        cameraTarget.clone().add(offset.multiplyScalar(zoomDistance.current)),
-      )
-      camera.lookAt(cameraTarget)
+      const orbitControls = controls as unknown as {
+        dollyIn?: (scale: number) => void
+        dollyOut?: (scale: number) => void
+        update?: () => void
+      } | null
+      if (Math.abs(deltaY) > 0.001 && orbitControls) {
+        const scale = Math.exp(Math.min(Math.abs(deltaY) * 2.8, 0.12))
+        if (deltaY > 0) orbitControls.dollyOut?.(scale)
+        else orbitControls.dollyIn?.(scale)
+        orbitControls.update?.()
+      }
     }
 
     if (gesture === 'POINT') {
@@ -279,7 +291,7 @@ function ImportedModel({
     }
 
     previousPoint.current = handPoint
-  }, [camera, cameraTarget, gesture, handPoint, model, onSelect])
+  }, [camera, cameraTarget, controls, gesture, handPoint, model, onSelect])
 
   useFrame((_, delta) => {
     const alpha = Math.min(delta * 4, 1)
@@ -312,12 +324,14 @@ function ImportedModel({
 }
 
 function Scene({
+  modelPath,
   handPoint,
   gesture,
   exploded,
   onSelect,
   onInfo,
 }: {
+  modelPath: string
   handPoint: HandPoint
   gesture: GestureName
   exploded: boolean
@@ -328,6 +342,7 @@ function Scene({
     material: string
     vertices: number
     dimensions: string
+    parts: number
   }) => void
 }) {
   return (
@@ -341,8 +356,9 @@ function Scene({
       <pointLight position={[-5, 3, -4]} color="#8b5cf6" intensity={16} />
       <pointLight position={[4, 1, 3]} color="#22d3ee" intensity={7} />
 
-      <group position={[0, -0.35, 0]} scale={1.5}>
+      <group position={[0, -0.15, 0]}>
         <ImportedModel
+          modelPath={modelPath}
           handPoint={handPoint}
           gesture={gesture}
           exploded={exploded}
@@ -390,8 +406,17 @@ export default function HoloScene({
     material: '—',
     vertices: 0,
     dimensions: '—',
+    parts: 0,
   })
   const [activeTab, setActiveTab] = useState('VISUALIZE')
+  const [modelPath, setModelPath] = useState(MODEL_OPTIONS[0].path)
+  const [customModelName, setCustomModelName] = useState<string | null>(null)
+  const [modelError, setModelError] = useState('')
+  const objectUrls = useRef<string[]>([])
+
+  useEffect(() => () => {
+    objectUrls.current.forEach((url) => URL.revokeObjectURL(url))
+  }, [])
 
   const handleSelect = useCallback((mesh: THREE.Mesh) => {
     setSelectedPart(mesh)
@@ -400,6 +425,25 @@ export default function HoloScene({
   const handleInfo = useCallback((info: typeof objectInfo) => {
     setObjectInfo(info)
   }, [])
+
+  const handleModelFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.glb')) {
+      setModelError('Choose a .glb file to load.')
+      return
+    }
+    const objectUrl = URL.createObjectURL(file)
+    objectUrls.current.push(objectUrl)
+    setModelPath(objectUrl)
+    setCustomModelName(file.name)
+    setModelError('')
+    setSelectedPart(null)
+    setExploded(false)
+  }
+
+  const currentModelName = customModelName ??
+    MODEL_OPTIONS.find((model) => model.path === modelPath)?.name ?? 'Custom model'
 
   useEffect(() => {
     if (gesture === 'FIST') setExploded(true)
@@ -493,13 +537,16 @@ export default function HoloScene({
             gl.toneMappingExposure = 1.1
           }}
         >
-          <Scene
-            handPoint={handPoint}
-            gesture={gesture}
-            exploded={exploded}
-            onSelect={handleSelect}
-            onInfo={handleInfo}
-          />
+          <Suspense fallback={null}>
+            <Scene
+              modelPath={modelPath}
+              handPoint={handPoint}
+              gesture={gesture}
+              exploded={exploded}
+              onSelect={handleSelect}
+              onInfo={handleInfo}
+            />
+          </Suspense>
         </Canvas>
 
         {/* Viewport labels */}
@@ -543,7 +590,55 @@ export default function HoloScene({
       </main>
 
       {/* Right-side inspector */}
-      <aside className="inspector-panel">
+      <aside className={`inspector-panel${activeTab !== 'VISUALIZE' ? ' mobile-open' : ''}`}>
+        <section className="model-card">
+          <div className="model-card-title">
+            <div className="eyebrow">CURRENT MODEL</div>
+            <div className="model-current-name">{currentModelName}</div>
+          </div>
+          <select
+            className="model-select"
+            aria-label="Choose a 3D model"
+            value={MODEL_OPTIONS.some((model) => model.path === modelPath) ? modelPath : 'custom'}
+            onChange={(event) => {
+              const next = MODEL_OPTIONS.find((model) => model.path === event.target.value)
+              if (!next) return
+              setModelPath(next.path)
+              setCustomModelName(null)
+              setModelError('')
+              setSelectedPart(null)
+              setExploded(false)
+            }}
+          >
+            {MODEL_OPTIONS.map((model) => <option key={model.path} value={model.path}>{model.name}</option>)}
+            {customModelName && <option value="custom">{customModelName}</option>}
+          </select>
+          <label className="upload-model">
+            <span>＋</span> Load a GLB file
+            <input type="file" accept=".glb,model/gltf-binary" onChange={handleModelFile} />
+          </label>
+          {modelError && <div className="model-error">{modelError}</div>}
+        </section>
+
+        {activeTab === 'ANALYZE' ? (
+          <section className="inspector-card page-card">
+            <div className="inspector-heading"><span><Icon name="chart" size={19} /></span><h2>MODEL ANALYSIS</h2></div>
+            <div className="analysis-grid">
+              <div><strong>{objectInfo.parts}</strong><span>COMPONENTS</span></div>
+              <div><strong>{objectInfo.vertices.toLocaleString()}</strong><span>VERTICES</span></div>
+            </div>
+            <div className="object-info"><div className="eyebrow">BOUNDING DIMENSIONS</div><div className="analysis-dimensions">{objectInfo.dimensions}</div></div>
+            <p className="analysis-note">Measurements are calculated from the loaded model. Select a mesh in the viewport to view its individual details.</p>
+          </section>
+        ) : activeTab === 'SETTINGS' ? (
+          <section className="inspector-card page-card">
+            <div className="inspector-heading"><span><Icon name="settings" size={19} /></span><h2>VIEWER SETTINGS</h2></div>
+            <div className="settings-row"><span>Exploded view</span><button className={`explode-toggle${exploded ? ' enabled' : ''}`} onClick={() => setExploded((value) => !value)}><span className="toggle-label">{exploded ? 'ON' : 'OFF'}</span><span className="toggle-track"><span className="toggle-knob" /></span></button></div>
+            <div className="settings-row"><span>Controls</span><span className="settings-value">Drag · scroll · pinch · hand</span></div>
+            <div className="settings-row"><span>Current model</span><span className="settings-value">{currentModelName}</span></div>
+            <p className="analysis-note">Drag to orbit. Scroll or pinch to zoom. Use the model picker above to load a sample or your own GLB file.</p>
+          </section>
+        ) : (
         <section className="inspector-card">
           <div className="inspector-heading">
             <span><Icon name="scan" size={19} /></span>
@@ -616,6 +711,7 @@ export default function HoloScene({
             </button>
           </div>
         </section>
+        )}
 
         {/* Live camera panel */}
         <section className="camera-card">
@@ -667,4 +763,4 @@ export default function HoloScene({
   )
 }
 
-useGLTF.preload(MODEL_PATH)
+MODEL_OPTIONS.forEach((model) => useGLTF.preload(model.path))
